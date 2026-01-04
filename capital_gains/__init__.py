@@ -3,9 +3,11 @@ Capital Gains Calculator Package
 
 A comprehensive Python tool for calculating capital gains from stock sales,
 designed for Indian residents with investments in both foreign (US) and Indian markets.
+
+Also includes Schedule FA (Foreign Assets) generation for ITR filing.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 from .models import SaleTransaction, StockLot, IndianGains, TaxData, QuarterlyData
 from .calculator import CapitalGainsCalculator
@@ -20,6 +22,17 @@ from .interfaces import (
     IReporter,
     BaseTransactionParser,
     BaseReporter,
+)
+
+# Schedule FA imports
+from .schedule_fa import (
+    ScheduleFAGenerator,
+    ScheduleFAConfig,
+    ScheduleFAReport,
+    ForeignAssetEntry,
+    ForeignCustodialAccount,
+    StockDataCache,
+    StockPriceFetcher,
 )
 
 __all__ = [
@@ -43,5 +56,13 @@ __all__ = [
     "IReporter",
     "BaseTransactionParser",
     "BaseReporter",
+    # Schedule FA
+    "ScheduleFAGenerator",
+    "ScheduleFAConfig",
+    "ScheduleFAReport",
+    "ForeignAssetEntry",
+    "ForeignCustodialAccount",
+    "StockDataCache",
+    "StockPriceFetcher",
 ]
 

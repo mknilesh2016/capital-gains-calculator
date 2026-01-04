@@ -207,21 +207,48 @@ marimo/_lsp/
 __marimo__/
 
 # =============================================================================
-# Project-specific ignores
+# Project-specific ignores (User-specific/Personal Data)
 # =============================================================================
 
-# Output files
+# Output files and reports
 capital_gains_report_*.xlsx
+Schedule_FA_*.xlsx
+*.xlsx
+!tests/*.xlsx
+
+# Cache files (contain fetched stock prices and user data)
 exchange_rates_cache.json
+stock_cache.json
+*.cache.json
+
+# EULA acceptance tracking
+.eula_accepted
+eula_acceptance.txt
 
 # Input statements (contain personal financial data)
 statements/EquityAwardsCenter_*.json
+statements/EquityAwardsCenter_*.csv
 statements/Individual_*.json
 statements/Mutual_Funds_Capital_Gains_Report*.xlsx
 statements/Stocks_Capital_Gains_Report*.xlsx
+statements/IT_Submitted_Form.pdf
 statements/pnl-*.xlsx
 statements/perquisites/
 
-# Keep the SBI rates file and generator script (they're not personal data)
+# Uploaded ZIP files
+*.zip
+uploads/
+
+# Temporary files
+*.tmp
+*.temp
+~$*
+
+# Backup files
+*.bak
+*.backup
+
+# Keep reference files (not personal data)
 !statements/sbi_reference_rates.json
 !statements/generate_sbi_rates.py
+!statements/Enhancing Tax Transparency on Foreign Assets and Income.pdf

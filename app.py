@@ -1,8 +1,17 @@
 """
 Capital Gains Calculator - Streamlit Web App
 
-A web interface for calculating capital gains from stock sales,
-designed for Indian residents with investments in both foreign (US) and Indian markets.
+A web interface for calculating capital gains from stock sales and generating
+Schedule FA (Foreign Assets) reports, designed for Indian residents with 
+investments in both foreign (US) and Indian markets.
+
+Features:
+- Capital Gains Calculator: Calculate gains from Schwab, Groww, and Zerodha
+- Schedule FA Generator: Generate ITR-compliant foreign asset declarations
+- Auto-fetch exchange rates: SBI TT Buy rates from Jan 2020 onwards
+- Excel export: Comprehensive reports with all calculations
+
+Run with: streamlit run app.py
 """
 
 import streamlit as st
@@ -15,6 +24,7 @@ import base64
 import tempfile
 import zipfile
 from datetime import datetime
+from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 from urllib.request import urlopen
 from urllib.error import URLError
@@ -285,6 +295,8 @@ from capital_gains import (
     SaleTransaction,
     IndianGains,
     TaxData,
+    ScheduleFAGenerator,
+    ScheduleFAConfig,
 )
 from capital_gains.parsers import (
     SchwabEACParser,
@@ -292,9 +304,9 @@ from capital_gains.parsers import (
     IndianStocksParser,
     IndianMutualFundsParser,
     ZerodhaPnLParser,
+    ForeignAssetsParser,
 )
-from capital_gains.reports import ExcelReporter
-from capital_gains.utils import ADVANCE_TAX_QUARTERS, get_advance_tax_quarter
+from capital_gains.reports import ExcelReporter, ScheduleFAExcelReporter
 
 # Page configuration
 st.set_page_config(
@@ -491,95 +503,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def create_header():
-    """Create the main header with disclaimer."""
-    st.markdown("""
-    <div class="main-header">
-        <h1>📊 Capital Gains Calculator</h1>
-        <p>Calculate capital gains for Indian tax filing • Supports Schwab, Groww & Zerodha</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Disclaimer
-    st.markdown("""
-    <div style="background: linear-gradient(145deg, #3d2e0a 0%, #4a3a10 100%); 
-                border: 1px solid rgba(241, 196, 15, 0.3); 
-                border-radius: 8px; 
-                padding: 0.8rem 1rem; 
-                margin-bottom: 1.5rem;
-                font-size: 0.85rem;">
-        <strong style="color: #f1c40f;">⚠️ Disclaimer:</strong>
-        <span style="color: #d0d0d0;">
-            This tool is for <strong>personal, non-commercial use only</strong>. 
-            Calculations are provided as-is without any guarantee of correctness. 
-            Always verify with a qualified tax professional before filing your returns.
-        </span>
-        <br><br>
-        <strong style="color: #f1c40f;">📊 Tax Rate Assumption:</strong>
-        <span style="color: #d0d0d0;">
-            This calculator uses <strong>New Tax Regime</strong> with <strong>39% effective rate</strong> 
-            (30% slab + 25% surcharge + 4% cess) for foreign STCG, assuming income above ₹2 Cr.
-        </span>
-    </div>
-    """, unsafe_allow_html=True)
-
-
-def create_metric_card(title: str, value: str, subtext: str = "", card_type: str = "default"):
-    """Create a styled metric card."""
-    card_class = "metric-card"
-    if card_type == "success":
-        card_class += " success-card"
-    elif card_type == "warning":
-        card_class += " warning-card"
-    
-    return f"""
-    <div class="{card_class}">
-        <h3>{title}</h3>
-        <div class="value">{value}</div>
-        {f'<div class="subtext">{subtext}</div>' if subtext else ''}
-    </div>
-    """
-
-
-def format_inr(amount: float) -> str:
-    """Format amount in Indian number format."""
-    if amount >= 10000000:  # Crore
-        return f"₹{amount/10000000:.2f} Cr"
-    elif amount >= 100000:  # Lakh
-        return f"₹{amount/100000:.2f} L"
-    else:
-        return f"₹{amount:,.2f}"
-
-
-def format_inr_full(amount: float) -> str:
-    """Format amount in full Indian number format."""
-    return f"₹{amount:,.2f}"
-
-
-def process_eac_file(uploaded_file, start_date: datetime) -> List[SaleTransaction]:
-    """Process Schwab EAC transactions file."""
-    try:
-        content = json.load(uploaded_file)
-        parser = SchwabEACParser()
-        transactions = content.get("Transactions", [])
-        return parser.parse(transactions, start_date)
-    except Exception as e:
-        st.error(f"Error processing EAC file: {str(e)}")
-        return []
-
-
-def process_individual_file(uploaded_file, start_date: datetime) -> List[SaleTransaction]:
-    """Process Schwab Individual transactions file."""
-    try:
-        content = json.load(uploaded_file)
-        parser = SchwabIndividualParser()
-        transactions = content.get("BrokerageTransactions", [])
-        return parser.parse(transactions, start_date)
-    except Exception as e:
-        st.error(f"Error processing Individual file: {str(e)}")
-        return []
-
-
 def _safe_delete_file(filepath: str) -> None:
     """Safely delete a file, ignoring errors if it doesn't exist."""
     try:
@@ -587,70 +510,6 @@ def _safe_delete_file(filepath: str) -> None:
             os.unlink(filepath)
     except (OSError, IOError):
         pass  # Ignore deletion errors
-
-
-def process_indian_stocks_file(uploaded_file) -> Optional[IndianGains]:
-    """Process Indian stocks file. Ensures temp file is deleted after use."""
-    tmp_path = None
-    try:
-        # Save to temp file for openpyxl
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-            tmp.write(uploaded_file.getvalue())
-            tmp_path = tmp.name
-        
-        parser = IndianStocksParser()
-        result = parser.parse(tmp_path)
-        return result
-    except Exception as e:
-        st.error(f"Error processing Indian Stocks file: {str(e)}")
-        return None
-    finally:
-        _safe_delete_file(tmp_path)
-
-
-def process_indian_mf_file(uploaded_file) -> Optional[IndianGains]:
-    """Process Indian mutual funds file. Ensures temp file is deleted after use."""
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-            tmp.write(uploaded_file.getvalue())
-            tmp_path = tmp.name
-        
-        parser = IndianMutualFundsParser()
-        result = parser.parse(tmp_path)
-        return result
-    except Exception as e:
-        st.error(f"Error processing Mutual Funds file: {str(e)}")
-        return None
-    finally:
-        _safe_delete_file(tmp_path)
-
-
-def process_zerodha_pnl_file(uploaded_file) -> Optional[IndianGains]:
-    """Process Zerodha P&L report file. Ensures temp file is deleted after use."""
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-            tmp.write(uploaded_file.getvalue())
-            tmp_path = tmp.name
-        
-        parser = ZerodhaPnLParser()
-        result = parser.parse(tmp_path)
-        return result
-    except Exception as e:
-        st.error(f"Error processing Zerodha P&L file: {str(e)}")
-        return None
-    finally:
-        _safe_delete_file(tmp_path)
-
-
-def load_sbi_rates_from_file(uploaded_file) -> Optional[dict]:
-    """Load SBI rates from uploaded JSON file."""
-    try:
-        return json.load(uploaded_file)
-    except Exception as e:
-        st.error(f"Error loading SBI rates file: {str(e)}")
-        return None
 
 
 @st.cache_data(ttl=3600, show_spinner=False)  # Cache for 1 hour
@@ -696,181 +555,6 @@ def fetch_sbi_rates() -> Optional[dict]:
     except Exception as e:
         st.warning(f"Error parsing SBI rates: {str(e)}")
         return None
-
-
-def display_transaction_summary(transactions: List[SaleTransaction]):
-    """Display transaction summary metrics."""
-    if not transactions:
-        return
-    
-    long_term = [t for t in transactions if t.is_long_term]
-    short_term = [t for t in transactions if not t.is_long_term]
-    
-    ltcg = sum(t.capital_gain_inr for t in long_term)
-    stcg = sum(t.capital_gain_inr for t in short_term)
-    total = ltcg + stcg
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.markdown(create_metric_card(
-            "Total Transactions",
-            str(len(transactions)),
-            f"{len(long_term)} LTCG • {len(short_term)} STCG"
-        ), unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown(create_metric_card(
-            "Long Term Gains",
-            format_inr(ltcg),
-            f"{len(long_term)} transactions",
-            "success" if ltcg >= 0 else "warning"
-        ), unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown(create_metric_card(
-            "Short Term Gains",
-            format_inr(stcg),
-            f"{len(short_term)} transactions",
-            "success" if stcg >= 0 else "warning"
-        ), unsafe_allow_html=True)
-    
-    with col4:
-        st.markdown(create_metric_card(
-            "Total Capital Gains",
-            format_inr(total),
-            "From foreign stocks",
-            "success" if total >= 0 else "warning"
-        ), unsafe_allow_html=True)
-
-
-def display_indian_gains_summary(indian_gains: List[IndianGains]):
-    """Display Indian gains summary."""
-    if not indian_gains:
-        return
-    
-    total_ltcg = sum(g.ltcg for g in indian_gains)
-    total_stcg = sum(g.stcg for g in indian_gains)
-    
-    st.markdown("### 🇮🇳 Indian Market Gains")
-    
-    cols = st.columns(len(indian_gains) + 1)
-    
-    for i, gain in enumerate(indian_gains):
-        with cols[i]:
-            st.markdown(create_metric_card(
-                gain.source,
-                format_inr(gain.ltcg + gain.stcg),
-                f"LTCG: {format_inr(gain.ltcg)} • STCG: {format_inr(gain.stcg)}"
-            ), unsafe_allow_html=True)
-    
-    with cols[-1]:
-        st.markdown(create_metric_card(
-            "Total Indian Gains",
-            format_inr(total_ltcg + total_stcg),
-            f"LTCG: {format_inr(total_ltcg)} • STCG: {format_inr(total_stcg)}",
-            "success"
-        ), unsafe_allow_html=True)
-
-
-def display_tax_summary(tax_data: TaxData):
-    """Display tax calculation summary."""
-    st.markdown("### 💰 Tax Calculation")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown(create_metric_card(
-            "LTCG Tax",
-            format_inr(tax_data.ltcg_tax),
-            f"Foreign: {format_inr(tax_data.foreign_ltcg_tax)} + Indian: {format_inr(tax_data.indian_ltcg_tax)}"
-        ), unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown(create_metric_card(
-            "STCG Tax",
-            format_inr(tax_data.stcg_tax),
-            f"Foreign: {format_inr(tax_data.foreign_stcg_tax)} + Indian: {format_inr(tax_data.indian_stcg_tax)}"
-        ), unsafe_allow_html=True)
-    
-    with col3:
-        if tax_data.taxes_paid > 0:
-            card_type = "warning" if tax_data.tax_liability > 0 else "success"
-            st.markdown(create_metric_card(
-                "Balance Tax Due",
-                format_inr(tax_data.tax_liability),
-                f"Total: {format_inr(tax_data.total_tax)} | Paid: {format_inr(tax_data.taxes_paid)}",
-                card_type
-            ), unsafe_allow_html=True)
-        else:
-            st.markdown(create_metric_card(
-                "Total Tax Payable",
-                format_inr(tax_data.total_tax),
-                "Includes surcharge & cess"
-            ), unsafe_allow_html=True)
-
-
-def display_detailed_transactions(transactions: List[SaleTransaction]):
-    """Display detailed transaction table."""
-    if not transactions:
-        return
-    
-    sorted_txns = sorted(transactions, key=lambda x: (x.sale_date, x.symbol))
-    
-    table_data = []
-    for txn in sorted_txns:
-        table_data.append({
-            "Sale Date": txn.sale_date.strftime("%d-%b-%Y"),
-            "Symbol": txn.symbol,
-            "Type": txn.stock_type,
-            "Shares": f"{txn.shares:.3f}" if txn.shares != int(txn.shares) else int(txn.shares),
-            "Sale Price (₹)": format_inr_full(txn.sale_price_inr),
-            "Acq. Price (₹)": format_inr_full(txn.acquisition_price_inr),
-            "Capital Gain (₹)": format_inr_full(txn.capital_gain_inr),
-            "Term": "LTCG" if txn.is_long_term else "STCG",
-            "Days Held": txn.holding_period_days,
-        })
-    
-    import pandas as pd
-    df = pd.DataFrame(table_data)
-    st.dataframe(df, use_container_width=True, hide_index=True)
-
-
-def display_quarterly_breakdown(transactions: List[SaleTransaction], indian_gains: List[IndianGains]):
-    """Display quarterly breakdown for advance tax."""
-    if not transactions and not indian_gains:
-        return
-    
-    st.markdown("### 📅 Quarterly Breakdown (Advance Tax)")
-    
-    quarters = ADVANCE_TAX_QUARTERS
-    
-    # Calculate foreign quarterly data
-    foreign_data = {q: {"ltcg": 0, "stcg": 0} for q in quarters}
-    for txn in transactions:
-        quarter = get_advance_tax_quarter(txn.sale_date)
-        if quarter in foreign_data:
-            if txn.is_long_term:
-                foreign_data[quarter]["ltcg"] += txn.capital_gain_inr
-            else:
-                foreign_data[quarter]["stcg"] += txn.capital_gain_inr
-    
-    # Create quarterly table
-    import pandas as pd
-    
-    data = []
-    for q in quarters:
-        ltcg = foreign_data[q]["ltcg"]
-        stcg = foreign_data[q]["stcg"]
-        data.append({
-            "Quarter": q,
-            "LTCG": format_inr_full(ltcg),
-            "STCG": format_inr_full(stcg),
-            "Total": format_inr_full(ltcg + stcg),
-        })
-    
-    df = pd.DataFrame(data)
-    st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 def generate_excel_report(
@@ -982,382 +666,631 @@ or transmitted anywhere.
             st.caption("⚠️ You must accept the terms to use this calculator")
 
 
-def main():
-    """Main application entry point."""
+
+
+
+
+def unified_main():
+    """Unified main application with flow-based file uploads."""
     # Check if EULA has been accepted
     if not st.session_state.get('eula_accepted', False):
         show_eula()
         return
     
-    create_header()
-    
-    # Sidebar for file uploads and configuration
+    # Sidebar with data management
     with st.sidebar:
-        st.markdown("## ⚙️ Configuration")
+        st.markdown("### ⚙️ Settings")
         
-        # Start date selection
-        start_date = st.date_input(
-            "Financial Year Start Date",
-            value=datetime(2025, 4, 1),
-            help="Start date for capital gains calculation"
-        )
-        start_date = datetime.combine(start_date, datetime.min.time())
-        
-        # Taxes already paid
-        taxes_paid = st.number_input(
-            "Taxes Already Paid (₹)",
-            min_value=0.0,
-            value=0.0,
-            step=10000.0,
-            help="Advance tax already paid for this FY"
-        )
-        
-        st.markdown("---")
-        st.markdown("## 📁 Upload Files")
-        
-        # File uploaders
-        st.markdown("### Schwab Files")
-        eac_file = st.file_uploader(
-            "EAC Transactions (JSON)",
-            type=['json'],
-            help="Export from Schwab Equity Awards Center"
-        )
-        
-        individual_file = st.file_uploader(
-            "Individual Brokerage (JSON)",
-            type=['json'],
-            help="Export from Schwab Individual Brokerage"
-        )
-        
-        st.markdown("### Indian Broker Files")
-        stocks_file = st.file_uploader(
-            "Groww Stocks Capital Gains (XLSX)",
-            type=['xlsx'],
-            help="Groww stocks capital gains report"
-        )
-        
-        mf_file = st.file_uploader(
-            "Groww Mutual Funds Capital Gains (XLSX)",
-            type=['xlsx'],
-            help="Groww mutual funds capital gains report"
-        )
-        
-        zerodha_file = st.file_uploader(
-            "Zerodha P&L Report (XLSX)",
-            type=['xlsx'],
-            help="Zerodha equity P&L report (pnl-*.xlsx)"
-        )
-        
-        st.markdown("### Exchange Rates (Optional)")
-        
-        # Option 1: Upload ZIP of perquisite emails for historical rates
-        perquisite_zip = st.file_uploader(
-            "Perquisite Emails ZIP",
-            type=['zip'],
-            help="Upload a ZIP file containing RSU/ESPP perquisite emails (.eml) for pre-2020 rates"
-        )
-        
-        # Option 2: Upload custom JSON rates file
-        sbi_rates_file = st.file_uploader(
-            "Or: Custom Rates JSON",
-            type=['json'],
-            help="Upload a complete sbi_reference_rates.json file"
-        )
-        
-        st.markdown("""
-        <div style="background: rgba(241, 196, 15, 0.1); 
-                    border: 1px solid rgba(241, 196, 15, 0.3); 
-                    border-radius: 6px; 
-                    padding: 0.6rem; 
-                    font-size: 0.75rem;
-                    margin-top: 0.5rem;">
-            <strong style="color: #f1c40f;">📅 Note:</strong>
-            <span style="color: #c0c0c0;">
-                Auto-fetched rates are available from <strong>January 2020</strong> onwards.<br>
-                For older transactions, either:<br>
-                • Upload a <strong>ZIP file</strong> containing RSU/ESPP perquisite emails (.eml), OR<br>
-                • Upload a custom <code>sbi_reference_rates.json</code> file
-            </span>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown("---")
-        calculate_btn = st.button("🧮 Calculate Gains", type="primary", use_container_width=True)
-        
-        # Clear data button
-        if st.button("🗑️ Clear All Data", use_container_width=True):
-            # Clear all session state
-            for key in list(st.session_state.keys()):
+        if st.button("🗑️ Clear All Data", use_container_width=True, help="Clear uploaded files, cache, and reset the app"):
+            # Clear Streamlit cache
+            st.cache_data.clear()
+            
+            # Clear stock cache file
+            cache_file = Path("stock_cache.json")
+            if cache_file.exists():
+                cache_file.unlink()
+            
+            # Increment uploader key to force file uploaders to reset
+            st.session_state['uploader_key'] = st.session_state.get('uploader_key', 0) + 1
+            
+            # Clear uploaded files from session state
+            if 'uploaded_files' in st.session_state:
+                del st.session_state['uploaded_files']
+            
+            # Clear any other session state data (except eula and uploader_key)
+            keys_to_clear = [k for k in st.session_state.keys() if k not in ['eula_accepted', 'uploader_key']]
+            for key in keys_to_clear:
                 del st.session_state[key]
+            
+            st.success("✅ All data cleared!")
             st.rerun()
         
-        # Privacy notice
+        st.markdown("---")
+        st.markdown("### 📚 Resources")
         st.markdown("""
-        <div style="background: rgba(46, 204, 113, 0.1); 
-                    border: 1px solid rgba(46, 204, 113, 0.3); 
-                    border-radius: 6px; 
-                    padding: 0.6rem; 
-                    font-size: 0.7rem;
-                    margin-top: 0.5rem;">
-            <strong style="color: #2ecc71;">🔒 Privacy:</strong>
-            <span style="color: #c0c0c0;">
-                Your files are processed in memory and <strong>not stored</strong> on any server. 
-                All temporary files are automatically deleted after processing. 
-                Click "Clear All Data" to remove any cached results.
-            </span>
-        </div>
-        """, unsafe_allow_html=True)
+        - [Schwab EAC](https://client.schwab.com/app/accounts/equityawards/)
+        - [Schwab Brokerage](https://www.schwab.com)
+        - [Groww Reports](https://groww.in)
+        - [Zerodha Console](https://console.zerodha.com)
+        """)
     
-    # Main content area
-    if calculate_btn:
-        with st.spinner("Processing transactions..."):
-            all_transactions = []
-            indian_gains = []
-            sbi_rates = None
-            
-            # Load exchange rates from multiple sources
-            sbi_rates = {}
-            
-            # Step 1: Extract rates from perquisite emails ZIP (historical rates pre-2020)
-            if perquisite_zip:
-                with st.spinner("📧 Extracting rates from perquisite emails..."):
-                    perquisite_rates = extract_rates_from_perquisite_zip(perquisite_zip)
-                if perquisite_rates:
-                    sbi_rates.update(perquisite_rates)
-                    st.success(f"✓ Extracted {len(perquisite_rates)} rates from perquisite emails")
-            
-            # Step 2: Load rates from JSON file OR fetch from SBI
-            if sbi_rates_file:
-                sbi_rates_file.seek(0)
-                json_rates = load_sbi_rates_from_file(sbi_rates_file)
-                if json_rates:
-                    sbi_rates.update(json_rates)  # JSON rates override perquisite rates
-                    st.success(f"✓ Loaded {len(json_rates)} rates from uploaded JSON")
-            else:
-                with st.spinner("📡 Fetching SBI TT Buy rates (Jan 2020 onwards)..."):
-                    fetched_rates = fetch_sbi_rates()
-                if fetched_rates:
-                    sbi_rates.update(fetched_rates)  # SBI rates override perquisite rates
-                    st.success(f"✓ Fetched {len(fetched_rates)} SBI exchange rates")
-            
-            if sbi_rates:
-                st.info(f"📊 Total exchange rates available: {len(sbi_rates)}")
-            
-            # Process EAC file
-            if eac_file:
-                eac_file.seek(0)
-                eac_txns = process_eac_file(eac_file, start_date)
-                if eac_txns:
-                    st.success(f"✓ Loaded {len(eac_txns)} EAC transactions")
-                    all_transactions.extend(eac_txns)
-            
-            # Process Individual file
-            if individual_file:
-                individual_file.seek(0)
-                ind_txns = process_individual_file(individual_file, start_date)
-                if ind_txns:
-                    st.success(f"✓ Loaded {len(ind_txns)} Individual transactions")
-                    all_transactions.extend(ind_txns)
-            
-            # Process Indian stocks
-            if stocks_file:
-                stocks_file.seek(0)
-                stocks_gains = process_indian_stocks_file(stocks_file)
-                if stocks_gains:
-                    st.success(f"✓ Loaded Indian Stocks gains")
-                    indian_gains.append(stocks_gains)
-            
-            # Process Mutual Funds
-            if mf_file:
-                mf_file.seek(0)
-                mf_gains = process_indian_mf_file(mf_file)
-                if mf_gains:
-                    st.success(f"✓ Loaded Mutual Funds gains")
-                    indian_gains.append(mf_gains)
-            
-            # Process Zerodha P&L
-            if zerodha_file:
-                zerodha_file.seek(0)
-                zerodha_gains = process_zerodha_pnl_file(zerodha_file)
-                if zerodha_gains:
-                    st.success(f"✓ Loaded Zerodha P&L gains")
-                    indian_gains.append(zerodha_gains)
-            
-            if not all_transactions and not indian_gains:
-                st.warning("No transactions found. Please upload at least one file.")
-                return
-            
-            # Calculate capital gains
-            calculator = CapitalGainsCalculator()
-            if all_transactions:
-                # Create temp file for SBI rates if provided
-                sbi_rates_path = None
-                try:
-                    if sbi_rates:
-                        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as tmp:
-                            json.dump(sbi_rates, tmp)
-                            sbi_rates_path = tmp.name
-                    
-                    all_transactions = calculator.calculate(
-                        all_transactions,
-                        use_sbi=bool(sbi_rates),
-                        sbi_rates_file=sbi_rates_path
-                    )
-                finally:
-                    _safe_delete_file(sbi_rates_path)
-            
-            # Calculate taxes
-            tax_calculator = TaxCalculator()
-            tax_data = tax_calculator.calculate(
-                transactions=all_transactions,
-                indian_gains=indian_gains,
-                taxes_paid=taxes_paid
+    # Header
+    st.markdown("""
+    <div class="main-header">
+        <h1>📊 Capital Gains & Schedule FA</h1>
+        <p>Calculate capital gains and generate Schedule FA for Indian Income Tax Returns</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ===== STEP 1: Report Type Selection =====
+    st.markdown("### Step 1: Select Report Type")
+    
+    report_mode = st.radio(
+        "What would you like to generate?",
+        ["💰 Capital Gains Calculator", "📋 Schedule FA (Foreign Assets)"],
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    
+    is_schedule_fa = "Schedule FA" in report_mode
+    
+    # ===== STEP 2: Configuration =====
+    st.markdown("---")
+    st.markdown("### Step 2: Configuration")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if is_schedule_fa:
+            calendar_year = st.number_input(
+                "Calendar Year",
+                min_value=2020,
+                max_value=2030,
+                value=2025,
+                help="Calendar year for Schedule FA reporting (Jan-Dec)"
             )
-            
-            # Store in session state for download
-            st.session_state['transactions'] = all_transactions
-            st.session_state['indian_gains'] = indian_gains
-            st.session_state['tax_data'] = tax_data
-            st.session_state['exchange_rates'] = calculator.get_exchange_rates_cache()
-            st.session_state['calculated'] = True
+            start_date = datetime(calendar_year, 1, 1)
+        else:
+            start_date = st.date_input(
+                "Financial Year Start",
+                value=datetime(2025, 4, 1),
+                help="Start of Indian financial year (typically April 1)"
+            )
+            start_date = datetime.combine(start_date, datetime.min.time())
+            calendar_year = start_date.year if start_date.month >= 4 else start_date.year - 1
     
-    # Display results if calculated
-    if st.session_state.get('calculated', False):
-        transactions = st.session_state['transactions']
-        indian_gains = st.session_state['indian_gains']
-        tax_data = st.session_state['tax_data']
-        exchange_rates = st.session_state['exchange_rates']
-        
-        st.markdown("---")
-        
-        # Summary metrics
-        if transactions:
-            st.markdown("### 🌍 Foreign Stock Gains (Schwab)")
-            display_transaction_summary(transactions)
-        
-        display_indian_gains_summary(indian_gains)
-        display_tax_summary(tax_data)
-        
-        st.markdown("---")
-        
-        # Tabs for detailed views
-        tab1, tab2, tab3 = st.tabs(["📋 Transactions", "📅 Quarterly", "📊 Tax Details"])
-        
-        with tab1:
-            if transactions:
-                display_detailed_transactions(transactions)
-            else:
-                st.info("No foreign stock transactions to display.")
-        
-        with tab2:
-            display_quarterly_breakdown(transactions, indian_gains)
-        
-        with tab3:
-            st.markdown("#### Tax Breakdown")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Foreign Stocks (Schwab):**")
-                st.write(f"- LTCG: {format_inr_full(tax_data.schwab_ltcg)}")
-                st.write(f"- STCG: {format_inr_full(tax_data.schwab_stcg)}")
-                
-                if indian_gains:
-                    st.markdown("**Indian Investments:**")
-                    st.write(f"- LTCG: {format_inr_full(tax_data.indian_ltcg)}")
-                    st.write(f"- STCG: {format_inr_full(tax_data.indian_stcg)}")
-                    if tax_data.rebate_used > 0:
-                        st.write(f"- LTCG Exemption Used: {format_inr_full(tax_data.rebate_used)}")
-            
-            with col2:
-                st.markdown("**Tax Computation:**")
-                st.write(f"- Foreign LTCG Tax: {format_inr_full(tax_data.foreign_ltcg_tax)}")
-                st.write(f"- Foreign STCG Tax: {format_inr_full(tax_data.foreign_stcg_tax)}")
-                st.write(f"- Indian LTCG Tax: {format_inr_full(tax_data.indian_ltcg_tax)}")
-                st.write(f"- Indian STCG Tax: {format_inr_full(tax_data.indian_stcg_tax)}")
-                st.write(f"- **Total Tax: {format_inr_full(tax_data.total_tax)}**")
-        
-        st.markdown("---")
-        
-        # Download Excel Report
-        st.markdown("### 📥 Download Report")
-        
-        if st.button("📄 Generate Excel Report", type="secondary"):
-            with st.spinner("Generating report..."):
-                excel_data = generate_excel_report(
-                    transactions,
-                    indian_gains,
-                    tax_data,
-                    exchange_rates
-                )
-                
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                st.download_button(
-                    label="⬇️ Download Excel Report",
-                    data=excel_data,
-                    file_name=f"capital_gains_report_{timestamp}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+    with col2:
+        if is_schedule_fa:
+            st.markdown(f"**Assessment Year:** {calendar_year + 1}-{str(calendar_year + 2)[2:]}")
+        else:
+            taxes_paid = st.number_input(
+                "Advance Tax Paid (₹)",
+                min_value=0.0,
+                value=0.0,
+                step=10000.0,
+                help="Tax already paid for this FY"
+            )
     
+    with col3:
+        auto_fetch_rates = st.checkbox(
+            "Auto-fetch SBI Rates",
+            value=True,
+            help="Automatically fetch USD-INR exchange rates"
+        )
+    
+    # ===== STEP 3: Upload Files =====
+    st.markdown("---")
+    st.markdown("### Step 3: Upload Transaction Files")
+    
+    # Initialize file storage in session state
+    if 'uploaded_files' not in st.session_state:
+        st.session_state.uploaded_files = {}
+    
+    # Get uploader key prefix for resetting file uploaders
+    uploader_key = st.session_state.get('uploader_key', 0)
+    
+    if is_schedule_fa:
+        # Schedule FA file uploads
+        st.markdown("#### 🇺🇸 Foreign Assets (Required)")
+        
+        with st.expander("ℹ️ How to download Schwab EAC files", expanded=False):
+            st.markdown("""
+            **EAC Transactions (JSON):**
+            1. Go to [Schwab Equity Award Center](https://client.schwab.com/app/accounts/equityawards/)
+            2. Login with your credentials
+            3. Navigate to **History** → **Transactions**
+            4. Set date range to cover the entire calendar year (Jan 1 - Dec 31)
+            5. Click **Export** → Select **JSON** format
+            6. Save file: `EquityAwardsCenter_Transactions_*.json`
+            
+            **Holdings CSV:**
+            1. Go to [Equity Today View](https://client.schwab.com/app/accounts/equityawards/#/equityTodayView)
+            2. Navigate to **Holdings** → **Equity Details** tab
+            3. Click **Export** → Select **CSV** format
+            4. Save file: `EquityAwardsCenter_EquityDetails_*.csv`
+            
+            *This file contains your current RSU/ESPP holdings with vest dates and FMV*
+            """)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            eac_file = st.file_uploader(
+                "Schwab EAC Transactions",
+                type=['json'],
+                help="EquityAwardsCenter_Transactions_*.json - Export from Schwab EAC → History → Transactions → Export as JSON",
+                key=f"eac_json_{uploader_key}"
+            )
+        
+        with col2:
+            holdings_file = st.file_uploader(
+                "Schwab Holdings CSV",
+                type=['csv'],
+                help="EquityAwardsCenter_EquityDetails_*.csv - Export from Schwab EAC → Holdings → Equity Details → Export as CSV",
+                key=f"holdings_csv_{uploader_key}"
+            )
+        
+        st.markdown("#### 📈 Brokerage Account (Optional)")
+        
+        with st.expander("ℹ️ How to download Schwab Brokerage files", expanded=False):
+            st.markdown("""
+            **Individual Brokerage Transactions (JSON):**
+            1. Go to [Schwab.com](https://www.schwab.com) and login
+            2. Navigate to **Accounts** → Select your brokerage account
+            3. Go to **History** → **Transactions**
+            4. Set date range to cover the entire calendar year
+            5. Click **Export** → Select **JSON** format
+            6. Save file: `Individual_*_Transactions_*.json`
+            
+            *This includes ETFs, stocks, dividends, and other brokerage transactions*
+            """)
+        
+        brokerage_file = st.file_uploader(
+            "Schwab Individual Brokerage",
+            type=['json'],
+            help="Individual_*_Transactions_*.json - Export from Schwab → Accounts → History → Export as JSON",
+            key=f"brokerage_json_{uploader_key}"
+        )
+        
+        # Store files
+        st.session_state.uploaded_files = {
+            'eac_json': eac_file,
+            'holdings_csv': holdings_file,
+            'brokerage_json': brokerage_file,
+        }
+        
+        # Check required files
+        has_required = eac_file is not None or holdings_file is not None
+        
     else:
-        # Instructions when no calculation done
-        st.markdown("""
-        <div class="info-box">
-            <h3 style="color: #e94560; margin: 0 0 0.5rem 0;">Getting Started</h3>
-            <ol style="color: #c0c0c0; margin: 0; padding-left: 1.5rem;">
-                <li>Upload your transaction files using the sidebar</li>
-                <li>Configure the financial year start date</li>
-                <li>Enter any taxes already paid (optional)</li>
-                <li>Click <strong>Calculate Gains</strong> to process</li>
-            </ol>
-        </div>
-        """, unsafe_allow_html=True)
+        # Capital Gains file uploads
+        st.markdown("#### 🇺🇸 US Stocks (Schwab)")
         
-        st.markdown("### 📚 Supported File Formats")
+        with st.expander("ℹ️ How to download Schwab files", expanded=False):
+            st.markdown("""
+            **EAC Transactions (JSON):**
+            1. Go to [Schwab Equity Award Center](https://client.schwab.com/app/accounts/equityawards/)
+            2. Login with your credentials
+            3. Navigate to **History** → **Transactions**
+            4. Set date range to cover the financial year (April 1 - March 31)
+            5. Click **Export** → Select **JSON** format
+            6. Save file: `EquityAwardsCenter_Transactions_*.json`
+            
+            **Individual Brokerage (JSON):**
+            1. Go to [Schwab.com](https://www.schwab.com) and login
+            2. Navigate to **Accounts** → Select your brokerage account
+            3. Go to **History** → **Transactions**
+            4. Set date range to cover the financial year
+            5. Click **Export** → Select **JSON** format
+            6. Save file: `Individual_*_Transactions_*.json`
+            """)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            eac_file = st.file_uploader(
+                "EAC Transactions (JSON)",
+                type=['json'],
+                help="Schwab EAC → History → Transactions → Export as JSON",
+                key=f"cg_eac_{uploader_key}"
+            )
+        
+        with col2:
+            brokerage_file = st.file_uploader(
+                "Individual Brokerage (JSON)",
+                type=['json'],
+                help="Schwab → Accounts → History → Export as JSON",
+                key=f"cg_brokerage_{uploader_key}"
+            )
+        
+        st.markdown("#### 🇮🇳 Indian Stocks")
+        
+        with st.expander("ℹ️ How to download Indian broker files", expanded=False):
+            st.markdown("""
+            **Groww Capital Gains Reports:**
+            1. Go to [Groww.in](https://groww.in) and login
+            2. Navigate to **Reports** → **Tax P&L Reports**
+            3. Select financial year (e.g., FY 2025-26)
+            4. Download **Stocks Capital Gains** report (XLSX)
+            5. Download **Mutual Funds Capital Gains** report (XLSX)
+            
+            *Alternative: Profile → Tax Reports → Capital Gains Statement*
+            
+            ---
+            
+            **Zerodha P&L Report:**
+            1. Go to [Console.zerodha.com](https://console.zerodha.com)
+            2. Login with your Kite credentials
+            3. Navigate to **Reports** → **Tax P&L**
+            4. Select financial year
+            5. Click **Download** → Select **XLSX** format
+            6. File will be named: `pnl-*.xlsx`
+            
+            *Includes equity delivery, F&O, and intraday P&L*
+            """)
         
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.markdown("""
-            **Schwab Files (JSON)**
-            - EAC Transactions export
-            - Individual Brokerage export
-            
-            *Export from Schwab History → JSON format*
-            """)
+            stocks_file = st.file_uploader(
+                "Groww Stocks (XLSX)",
+                type=['xlsx'],
+                help="Groww → Reports → Tax P&L → Stocks Capital Gains",
+                key=f"cg_stocks_{uploader_key}"
+            )
         
         with col2:
-            st.markdown("""
-            **Indian Broker Files (XLSX)**
-            - Groww Capital Gains Report
-            - Groww Mutual Funds Report
-            - Zerodha P&L Report
-            
-            *Download from your broker's tax reports section*
-            """)
+            mf_file = st.file_uploader(
+                "Groww Mutual Funds (XLSX)",
+                type=['xlsx'],
+                help="Groww → Reports → Tax P&L → Mutual Funds Capital Gains",
+                key=f"cg_mf_{uploader_key}"
+            )
         
         with col3:
+            zerodha_file = st.file_uploader(
+                "Zerodha P&L (XLSX)",
+                type=['xlsx'],
+                help="Console.zerodha.com → Reports → Tax P&L → Download XLSX",
+                key=f"cg_zerodha_{uploader_key}"
+            )
+        
+        st.markdown("#### 💱 Exchange Rates (Optional)")
+        
+        with st.expander("ℹ️ About exchange rates", expanded=False):
             st.markdown("""
-            **Perquisite Emails (ZIP)**
-            - ZIP containing .eml files
-            - RSU/ESPP Perquisite Details
+            **Auto-fetch (Recommended):**
+            - SBI TT Buying rates are auto-fetched from January 2020 onwards
+            - No manual upload needed if all transactions are after 2020
             
-            *For historical rates (pre-2020) from payroll provider*
+            **For Pre-2020 Transactions:**
+            
+            *Option 1: Perquisite Emails ZIP*
+            1. Find RSU/ESPP perquisite emails from your payroll provider
+            2. Save emails as `.eml` files (in Outlook: File → Save As)
+            3. Create a ZIP file containing all `.eml` files
+            4. Upload the ZIP file
+            
+            *Option 2: Custom Rates JSON*
+            - Upload a `sbi_reference_rates.json` file with format:
+            ```json
+            {
+              "2019-06-15": 69.50,
+              "2019-12-20": 71.25
+            }
+            ```
             """)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            rates_file = st.file_uploader(
+                "SBI Rates JSON",
+                type=['json'],
+                help="Custom exchange rates file (optional - rates are auto-fetched from Jan 2020)",
+                key=f"cg_rates_{uploader_key}"
+            )
+        
+        with col2:
+            perquisite_zip = st.file_uploader(
+                "Perquisite Emails ZIP",
+                type=['zip'],
+                help="ZIP of .eml files from payroll provider (for pre-2020 rates)",
+                key=f"cg_perq_{uploader_key}"
+            )
+        
+        # Store files
+        st.session_state.uploaded_files = {
+            'eac_json': eac_file,
+            'brokerage_json': brokerage_file,
+            'indian_stocks_xlsx': stocks_file,
+            'indian_mf_xlsx': mf_file,
+            'zerodha_xlsx': zerodha_file,
+            'rates_json': rates_file,
+            'perquisite_zip': perquisite_zip,
+        }
+        
+        # Check if any files uploaded
+        has_required = any([eac_file, brokerage_file, stocks_file, mf_file, zerodha_file])
+        
+        if not is_schedule_fa:
+            taxes_paid_val = taxes_paid
+        else:
+            taxes_paid_val = 0.0
     
-    # Footer disclaimer
+    # ===== STEP 4: Generate Report =====
+    st.markdown("---")
+    st.markdown("### Step 4: Generate Report")
+    
+    # Show file summary
+    files_uploaded = sum(1 for f in st.session_state.uploaded_files.values() if f is not None)
+    
+    if files_uploaded > 0:
+        st.success(f"✓ {files_uploaded} file(s) uploaded")
+    else:
+        st.warning("⚠️ Please upload at least one transaction file")
+    
+    generate_btn = st.button(
+        "🚀 Generate Report",
+        type="primary",
+        use_container_width=True,
+        disabled=not has_required
+    )
+    
+    if generate_btn and has_required:
+        with st.spinner("Processing files..."):
+            try:
+                # Get exchange rates
+                exchange_rates = {}
+                
+                # Load from uploaded file
+                if not is_schedule_fa and st.session_state.uploaded_files.get('rates_json'):
+                    rates_file = st.session_state.uploaded_files['rates_json']
+                    rates_file.seek(0)
+                    exchange_rates = json.load(rates_file)
+                
+                # Process perquisite emails for historical rates
+                if not is_schedule_fa and st.session_state.uploaded_files.get('perquisite_zip'):
+                    perq_rates = process_perquisite_zip(st.session_state.uploaded_files['perquisite_zip'])
+                    exchange_rates.update(perq_rates)
+                
+                # Auto-fetch SBI rates
+                if auto_fetch_rates:
+                    fetched = fetch_sbi_rates()
+                    if fetched:
+                        exchange_rates.update(fetched)
+                        st.success(f"✓ Loaded {len(fetched)} SBI exchange rates")
+                
+                if is_schedule_fa:
+                    generate_schedule_fa_from_files(
+                        st.session_state.uploaded_files,
+                        exchange_rates,
+                        calendar_year
+                    )
+                else:
+                    generate_capital_gains_from_files(
+                        st.session_state.uploaded_files,
+                        exchange_rates,
+                        start_date,
+                        taxes_paid_val
+                    )
+                    
+            except Exception as e:
+                st.error(f"Error processing files: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
+    
+    # Footer
     st.markdown("---")
     st.markdown("""
-    <div style="text-align: center; color: #808080; font-size: 0.8rem; padding: 1rem 0;">
-        <p style="margin: 0;">
-            <strong>⚠️ Non-Commercial Use Only</strong><br>
-            This calculator is provided for personal use without any warranty. 
-            Calculations may contain errors and should not be relied upon for tax filing without professional verification.<br>
-            <em>Always consult a qualified Chartered Accountant before filing your tax returns.</em>
-        </p>
+    <div style="text-align: center; color: #808080; font-size: 0.8rem;">
+        <strong>⚠️ Non-Commercial Use Only</strong> | 
+        Verify all calculations with a qualified CA before filing.
     </div>
     """, unsafe_allow_html=True)
 
 
+def generate_schedule_fa_from_files(files: dict, exchange_rates: dict, calendar_year: int):
+    """Generate Schedule FA report from individual uploaded files."""
+    from capital_gains.parsers.foreign_assets import ForeignAssetsParser
+    
+    # Create parser and load data
+    parser = ForeignAssetsParser(calendar_year)
+    
+    eac_data = None
+    if files.get('eac_json'):
+        files['eac_json'].seek(0)
+        eac_json = json.load(files['eac_json'])
+        eac_data = parser.parse_eac_transactions(eac_json)
+        st.info(f"📊 Parsed EAC transactions: {len(eac_data.get('sales', []))} sales, {len(eac_data.get('dividends', []))} dividends")
+    
+    holdings = []
+    if files.get('holdings_csv'):
+        files['holdings_csv'].seek(0)
+        holdings_csv = files['holdings_csv'].read().decode('utf-8')
+        symbol = eac_data.get('symbol', 'NVDA') if eac_data else 'NVDA'
+        holdings = parser.parse_holdings_csv(holdings_csv, symbol)
+        st.info(f"📊 Parsed holdings: {len(holdings)} lots")
+    
+    brokerage_data = None
+    if files.get('brokerage_json'):
+        files['brokerage_json'].seek(0)
+        brokerage_json = json.load(files['brokerage_json'])
+        brokerage_data = parser.parse_brokerage_transactions(brokerage_json)
+        st.info(f"📊 Parsed brokerage: {len(brokerage_data.get('holdings', {}))} holdings")
+    
+    # Create generator
+    config = ScheduleFAConfig(calendar_year=calendar_year)
+    generator = ScheduleFAGenerator(config=config, exchange_rates=exchange_rates)
+    
+    # Load data
+    generator.load_data(
+        eac_data=eac_data,
+        brokerage_data=brokerage_data,
+        held_shares=holdings
+    )
+    
+    # Generate report
+    report = generator.generate()
+    
+    # Display results
+    st.success(f"✅ Schedule FA generated for Assessment Year {report.config.assessment_year}")
+    
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Entries", report.get_entry_count())
+    with col2:
+        st.metric("Closing Value", f"₹{report.total_closing_value_inr:,.0f}")
+    with col3:
+        st.metric("Sale Proceeds", f"₹{report.total_sale_proceeds_inr:,.0f}")
+    with col4:
+        st.metric("Dividends", f"₹{report.total_dividend_inr:,.0f}")
+    
+    # Download button
+    st.markdown("### 📥 Download Report")
+    
+    reporter = ScheduleFAExcelReporter()
+    excel_data = reporter.export(report, exchange_rates=exchange_rates)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.download_button(
+        label="⬇️ Download Schedule FA Excel",
+        data=excel_data,
+        file_name=f"Schedule_FA_AY{report.config.assessment_year}_{timestamp}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+
+def generate_capital_gains_from_files(files: dict, exchange_rates: dict, start_date: datetime, taxes_paid: float):
+    """Generate Capital Gains report from individual uploaded files."""
+    all_transactions = []
+    indian_gains_list = []
+    
+    # Process Schwab EAC
+    if files.get('eac_json'):
+        files['eac_json'].seek(0)
+        eac_json = json.load(files['eac_json'])
+        parser = SchwabEACParser()
+        eac_transactions = eac_json.get('Transactions', [])
+        transactions = parser.parse(eac_transactions, start_date)
+        all_transactions.extend(transactions)
+        st.info(f"📊 Parsed {len(transactions)} EAC transactions")
+    
+    # Process Schwab Brokerage  
+    if files.get('brokerage_json'):
+        files['brokerage_json'].seek(0)
+        brokerage_json = json.load(files['brokerage_json'])
+        parser = SchwabIndividualParser()
+        brokerage_transactions = brokerage_json.get('BrokerageTransactions', [])
+        transactions = parser.parse(brokerage_transactions, start_date)
+        all_transactions.extend(transactions)
+        st.info(f"📊 Parsed {len(transactions)} brokerage transactions")
+    
+    # Process Indian Stocks
+    if files.get('indian_stocks_xlsx'):
+        try:
+            files['indian_stocks_xlsx'].seek(0)
+            # Save to temp file for parser
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                tmp.write(files['indian_stocks_xlsx'].read())
+                tmp_path = tmp.name
+            
+            parser = IndianStocksParser()
+            gains = parser.parse(tmp_path)
+            indian_gains_list.append(gains)
+            st.info(f"📊 Parsed Indian stocks: STCG ₹{gains.stcg:,.0f}, LTCG ₹{gains.ltcg:,.0f}")
+            
+            os.unlink(tmp_path)
+        except Exception as e:
+            st.warning(f"Could not parse Indian stocks file: {e}")
+    
+    # Process Indian MF
+    if files.get('indian_mf_xlsx'):
+        try:
+            files['indian_mf_xlsx'].seek(0)
+            # Save to temp file for parser
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                tmp.write(files['indian_mf_xlsx'].read())
+                tmp_path = tmp.name
+            
+            parser = IndianMutualFundsParser()
+            gains = parser.parse(tmp_path)
+            indian_gains_list.append(gains)
+            st.info(f"📊 Parsed Indian MF: STCG ₹{gains.stcg:,.0f}, LTCG ₹{gains.ltcg:,.0f}")
+            
+            os.unlink(tmp_path)
+        except Exception as e:
+            st.warning(f"Could not parse Indian MF file: {e}")
+    
+    # Process Zerodha
+    if files.get('zerodha_xlsx'):
+        try:
+            files['zerodha_xlsx'].seek(0)
+            # Save to temp file for Zerodha parser
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                tmp.write(files['zerodha_xlsx'].read())
+                tmp_path = tmp.name
+            
+            parser = ZerodhaPnLParser()
+            gains = parser.parse(tmp_path)
+            indian_gains_list.append(gains)
+            st.info(f"📊 Parsed Zerodha: STCG ₹{gains.stcg:,.0f}, LTCG ₹{gains.ltcg:,.0f}")
+            
+            os.unlink(tmp_path)
+        except Exception as e:
+            st.warning(f"Could not parse Zerodha file: {e}")
+    
+    # Calculate totals
+    total_indian = sum(g.ltcg + g.stcg for g in indian_gains_list)
+    
+    if not all_transactions and total_indian == 0:
+        st.warning("No transactions found in the uploaded files.")
+        return
+    
+    # Calculate gains
+    calculator = CapitalGainsCalculator()
+    results = calculator.calculate(all_transactions, exchange_rates)
+    
+    # Calculate taxes
+    tax_calc = TaxCalculator()
+    tax_data = tax_calc.calculate(results, indian_gains_list, taxes_paid)
+    
+    # Display results
+    st.success("✅ Capital gains calculated successfully!")
+    
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Foreign STCG", f"₹{tax_data.schwab_stcg:,.0f}")
+    with col2:
+        st.metric("Foreign LTCG", f"₹{tax_data.schwab_ltcg:,.0f}")
+    with col3:
+        st.metric("Indian Gains", f"₹{total_indian:,.0f}")
+    with col4:
+        if tax_data.tax_liability > 0:
+            st.metric("Tax Due", f"₹{tax_data.tax_liability:,.0f}", delta_color="inverse")
+        else:
+            st.metric("Tax Refund", f"₹{abs(tax_data.tax_liability):,.0f}")
+    
+    # Download button
+    st.markdown("### 📥 Download Report")
+    
+    excel_data = generate_excel_report(results, indian_gains_list, tax_data, exchange_rates)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.download_button(
+        label="⬇️ Download Capital Gains Excel",
+        data=excel_data,
+        file_name=f"capital_gains_report_{timestamp}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+
 if __name__ == "__main__":
-    main()
+    unified_main()
 

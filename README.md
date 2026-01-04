@@ -27,6 +27,13 @@ A comprehensive Python tool for calculating capital gains from stock sales, desi
   - Quarterly breakdown for advance tax payments
   - Excel export with multiple formatted sheets
 
+- **Schedule FA Generation** (for ITR filing):
+  - Foreign equity holdings (RSU, ESPP, stocks)
+  - Brokerage account details
+  - Dividend income with foreign tax credit
+  - Peak/closing values with exchange rates
+  - ITR-compliant format
+
 ---
 
 ## Quick Start
@@ -47,16 +54,30 @@ streamlit run app.py
 
 ## 🌐 Web App
 
-This calculator is available as a web application! You can:
+This calculator is available as a web application with two modes:
 
-1. **Use it online**: [Capital Gains Calculator on Streamlit](https://your-app.streamlit.app) *(replace with your deployed URL)*
+- **💰 Capital Gains Calculator** - Calculate capital gains for tax filing
+- **📋 Schedule FA Generator** - Generate Schedule FA (Foreign Assets) for ITR
 
-2. **Run locally**:
-   ```bash
-   streamlit run app.py
-   ```
+### Run Locally
 
-3. **Deploy your own instance** on Streamlit Cloud (free) - see [Deployment](#deployment-to-streamlit-cloud) section below.
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the web app
+streamlit run app.py
+```
+
+The app will open at `http://localhost:8501`
+
+### Features
+
+- **Step-by-step flow**: Guided process with individual file uploads
+- **Auto-fetch exchange rates**: SBI TT Buy rates from Jan 2020 onwards
+- **Detailed help**: Each file upload includes expandable instructions on how to download from respective websites
+- **Excel export**: Download comprehensive reports with all calculations
+- **Sidebar utilities**: Quick links to broker websites and "Clear All Data" button to reset uploads
 
 ---
 
@@ -85,7 +106,7 @@ The project follows a modular architecture with clean separation of concerns:
 ```text
 capital-gains-calculator/
 ├── main.py                      # CLI application entry point
-├── app.py                       # Streamlit web app
+├── app.py                       # Streamlit web app (unified interface)
 ├── .streamlit/                  # Streamlit configuration
 │   └── config.toml              # Theme and settings
 ├── capital_gains/               # Main package
@@ -99,17 +120,26 @@ capital-gains-calculator/
 │   ├── parsers/                 # Transaction parsers
 │   │   ├── __init__.py
 │   │   ├── schwab.py            # Schwab EAC & Individual parsers
-│   │   └── indian.py            # Indian broker parsers
-│   └── reports/                 # Report generators
+│   │   ├── indian.py            # Indian broker parsers
+│   │   └── foreign_assets.py    # Foreign assets parser (Schedule FA)
+│   ├── reports/                 # Report generators
+│   │   ├── __init__.py
+│   │   ├── console.py           # Terminal output
+│   │   ├── excel.py             # Capital gains Excel export
+│   │   └── schedule_fa_excel.py # Schedule FA Excel export
+│   └── schedule_fa/             # Schedule FA generation
 │       ├── __init__.py
-│       ├── console.py           # Terminal output
-│       └── excel.py             # Excel workbook export
+│       ├── models.py            # Schedule FA data models
+│       ├── generator.py         # Report generation logic
+│       ├── stock_cache.py       # Stock price caching
+│       └── price_fetcher.py     # Yahoo Finance integration
 ├── tests/                       # Test suite
 │   ├── test_calculator.py
 │   ├── test_exchange_rates.py
 │   ├── test_models.py
 │   ├── test_parsers.py
 │   ├── test_reporters.py
+│   ├── test_schedule_fa.py      # Schedule FA tests
 │   ├── test_tax.py
 │   ├── test_integration.py
 │   └── test_interfaces.py
@@ -176,44 +206,84 @@ Place all input files in the `statements/` folder (created automatically if not 
 
 Follow these steps to export your RSU and ESPP transaction history from Schwab:
 
-1. **Log in to Schwab** at [schwab.com](https://www.schwab.com)
+1. **Log in to Schwab Equity Award Center**
+   - Go to [client.schwab.com/app/accounts/equityawards](https://client.schwab.com/app/accounts/equityawards/)
+   - Login with your credentials
 
 2. **Navigate to Transaction History**
-   - Go to **Accounts** → **History**
-   - Or directly visit the Transaction History page
+   - Go to **History** → **Transactions**
 
-3. **Select Account Type**
-   - Click the dropdown at the top left
-   - Select **"Equity Award Center"**
+3. **Set Date Range**
+   - For Capital Gains: Set range to cover the financial year (April 1 - March 31)
+   - For Schedule FA: Set range to cover the calendar year (Jan 1 - Dec 31)
 
-4. **Set Date Range**
-   - Choose **"Last 12 Months"** or a custom date range
-   - Ensure it covers all transactions for the financial year
-
-5. **Export as JSON**
-   - Click the **Export/Download** icon (usually top right)
+4. **Export as JSON**
+   - Click the **Export/Download** icon (top right)
    - In the "Export Transactions Data" dialog:
      - Select **"JSON"** (For web applications and APIs)
      - Click **"Export"**
 
-   ![Schwab Export Dialog](docs/schwab_export_dialog.png)
+5. **Save the File**
+   - File will be named: `EquityAwardsCenter_Transactions_YYYYMMDDHHMMSS.json`
 
-6. **Save the File**
-   - Save as `EquityAwardsCenter_Transactions_YYYYMMDD.json`
-   - Move to the `statements/` folder
+### Exporting Equity Holdings CSV (for Schedule FA)
+
+1. **Go to Equity Today View**
+   - Navigate to [client.schwab.com/app/accounts/equityawards/#/equityTodayView](https://client.schwab.com/app/accounts/equityawards/#/equityTodayView)
+
+2. **Navigate to Equity Details**
+   - Go to **Holdings** → **Equity Details** tab
+
+3. **Export as CSV**
+   - Click **Export** → Select **CSV** format
+   - File will be named: `EquityAwardsCenter_EquityDetails_YYYYMMDDHHMMSS.csv`
+
+> **Note**: This file contains your current RSU/ESPP holdings with vest dates and Fair Market Value (FMV)
 
 ### Exporting Individual Brokerage Transactions
 
 For regular stock/ETF trades in your Individual account:
 
-1. Follow steps 1-2 above
-2. Select **"Individual"** (or your brokerage account) from the dropdown
-3. Set the date range to cover all relevant transactions
-4. Export as **JSON**
-5. Save as `Individual_Transactions_YYYYMMDD.json`
-6. Move to the `statements/` folder
+1. **Log in to Schwab**
+   - Go to [schwab.com](https://www.schwab.com) and login
+
+2. **Navigate to Transaction History**
+   - Go to **Accounts** → Select your brokerage account
+   - Navigate to **History** → **Transactions**
+
+3. **Set Date Range**
+   - Set range to cover all relevant transactions
+
+4. **Export as JSON**
+   - Click **Export** → Select **JSON** format
+   - File will be named: `Individual_*_Transactions_YYYYMMDD-HHMMSS.json`
 
 > **Note**: For FIFO matching to work correctly, ensure you export the complete transaction history including all Buy transactions, not just sales.
+
+---
+
+## How to Export Data from Groww
+
+### Exporting Stocks Capital Gains Report
+
+1. **Log in to Groww** at [groww.in](https://groww.in)
+
+2. **Navigate to Tax Reports**
+   - Go to **Reports** → **Tax P&L Reports**
+   - Or: **Profile** → **Tax Reports** → **Capital Gains Statement**
+
+3. **Select Financial Year**
+   - Choose the relevant financial year (e.g., FY 2025-26)
+
+4. **Download Report**
+   - Click **Stocks Capital Gains** → Download as **XLSX**
+   - File will be named: `Stocks_Capital_Gains_Report_*.xlsx`
+
+### Exporting Mutual Funds Capital Gains Report
+
+1. Follow steps 1-3 above
+2. Click **Mutual Funds Capital Gains** → Download as **XLSX**
+3. File will be named: `Mutual_Funds_Capital_Gains_Report_*.xlsx`
 
 ---
 
@@ -224,18 +294,14 @@ For regular stock/ETF trades in your Individual account:
 1. **Log in to Zerodha Console** at [console.zerodha.com](https://console.zerodha.com)
 
 2. **Navigate to Reports**
-   - Go to **Reports** → **P&L**
-   - Or directly visit: Console → Tax P&L
+   - Go to **Reports** → **Tax P&L**
 
-3. **Select Date Range**
+3. **Select Financial Year**
    - Choose the financial year (e.g., FY 2025-26: April 1, 2025 to March 31, 2026)
 
 4. **Download P&L Report**
    - Click **Download** → **Excel (XLSX)**
-   - The file will be named like `pnl-YB8529.xlsx`
-
-5. **Move to statements folder**
-   - Save/move the file to the `statements/` folder
+   - File will be named: `pnl-*.xlsx`
 
 > **Note**: The Zerodha P&L report shows "Realized P&L" which includes both gains and losses. Since the report doesn't distinguish between LTCG and STCG, all realized P&L is treated as STCG (conservative approach) in the calculator. The report also includes detailed charges breakdown (STT, brokerage, etc.).
 
@@ -693,6 +759,8 @@ python -m pytest tests/test_integration.py -v
 | pandas | ≥2.0.0 | Data manipulation (web app) |
 | streamlit | ≥1.28.0 | Web application framework |
 | requests | ≥2.25.0 | HTTP requests (rate updates) |
+| xlsxwriter | ≥3.1.0 | Excel report generation (Schedule FA) |
+| yfinance | ≥0.2.0 | Stock price fetching (Schedule FA) |
 | pytest | ≥7.0.0 | Testing framework |
 | pytest-cov | ≥4.0.0 | Test coverage |
 
@@ -758,6 +826,61 @@ streamlit run app.py
 ```
 
 The app will open at `http://localhost:8501`
+
+---
+
+## Schedule FA Generation
+
+The app includes Schedule FA (Foreign Assets) generation for Indian Income Tax Returns.
+
+### What is Schedule FA?
+
+Schedule FA is required for Indian residents who hold foreign assets or have income from foreign sources. It must be filed as part of ITR-2/ITR-3 if you have:
+
+- Foreign stocks (RSU, ESPP, regular trades)
+- Foreign brokerage accounts
+- Dividend income from foreign stocks
+
+### Required Files for Schedule FA
+
+| File | Source | Purpose |
+|------|--------|---------|
+| EAC Transactions JSON | Schwab EAC | Sales, dividends, tax withholding |
+| Equity Details CSV | Schwab EAC | Current holdings at year-end |
+| Brokerage Transactions JSON | Schwab Individual | ETF/stock trades (optional) |
+
+### How to Use
+
+1. Select **📋 Schedule FA (Foreign Assets)** mode in the app
+2. Set the **Calendar Year** (Jan-Dec, not FY)
+3. Upload your files:
+   - **EAC Transactions JSON** - from Schwab History → Export
+   - **Holdings CSV** - from Schwab Equity Details → Export
+   - **Brokerage JSON** (optional) - for individual brokerage trades
+4. Click **Generate Report**
+5. Download the Excel report
+
+### Schedule FA Excel Output
+
+The generated Excel file includes:
+
+| Sheet | Contents |
+|-------|----------|
+| Summary | Overview with Indian number formatting (lakhs/crores) |
+| Schedule FA | ITR-compliant format with all entries |
+| Regular Sales | RSU/ESPP sales during the year |
+| Tax Withholding Sales | RSU sales for tax withholding |
+| Held Shares | Shares held at year-end |
+| Brokerage | Individual brokerage transactions |
+| Dividends | Dividend income for Schedule FSI |
+
+### Exchange Rate Sources
+
+The app uses SBI TT Buying Rates for USD-INR conversion:
+
+- **Auto-fetch**: Rates from January 2020 onwards are automatically fetched
+- **Manual upload**: For older dates, upload `sbi_reference_rates.json`
+- **Perquisite emails**: Extract rates from RSU/ESPP perquisite emails (ZIP of .eml files)
 
 ---
 
