@@ -428,8 +428,8 @@ class TestScheduleFAGenerator:
         assert generator.brokerage_data == brokerage_data
         assert generator.held_shares == held_shares
     
-    @patch('capital_gains.schedule_fa.price_fetcher.YFINANCE_AVAILABLE', False)
-    def test_generator_without_yfinance(self):
+    @patch('capital_gains.schedule_fa.price_fetcher._get_yfinance', return_value=None)
+    def test_generator_without_yfinance(self, mock_yf):
         """Test generator works without yfinance."""
         config = ScheduleFAConfig(2025)
         rates = {'2025-01-01': 83.0, '2025-12-31': 85.0}

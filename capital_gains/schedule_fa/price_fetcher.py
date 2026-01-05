@@ -8,13 +8,24 @@ from typing import Optional, Dict, Tuple, Any
 from .stock_cache import StockDataCache
 from .models import ScheduleFAConfig
 
-# Try to import yfinance (may fail on Python < 3.10 due to type hint syntax)
-try:
-    import yfinance as yf
-    YFINANCE_AVAILABLE = True
-except (ImportError, TypeError):
-    YFINANCE_AVAILABLE = False
-    yf = None  # type: ignore
+# yfinance is imported lazily to avoid SyntaxError on Python < 3.12
+# (newer yfinance versions use f-string syntax like f'{df['col']}' which is 3.12+ only)
+_yf_module = None
+_yf_checked = False
+
+
+def _get_yfinance():
+    """Lazily import yfinance, returning None if unavailable or incompatible."""
+    global _yf_module, _yf_checked
+    if _yf_checked:
+        return _yf_module
+    _yf_checked = True
+    try:
+        import yfinance as yf
+        _yf_module = yf
+    except (ImportError, TypeError, SyntaxError):
+        _yf_module = None
+    return _yf_module
 
 
 class StockPriceFetcher:
@@ -41,7 +52,8 @@ class StockPriceFetcher:
         if cached:
             return cached
         
-        if not YFINANCE_AVAILABLE:
+        yf = _get_yfinance()
+        if yf is None:
             return self._get_default_metadata(symbol)
         
         try:
@@ -119,7 +131,8 @@ class StockPriceFetcher:
         if symbol in self._history_cache:
             return self._history_cache[symbol]
         
-        if not YFINANCE_AVAILABLE:
+        yf = _get_yfinance()
+        if yf is None:
             return None
         
         try:
