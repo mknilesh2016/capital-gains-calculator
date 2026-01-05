@@ -8,12 +8,13 @@ from typing import Optional, Dict, Tuple, Any
 from .stock_cache import StockDataCache
 from .models import ScheduleFAConfig
 
-# Try to import yfinance
+# Try to import yfinance (may fail on Python < 3.10 due to type hint syntax)
 try:
     import yfinance as yf
     YFINANCE_AVAILABLE = True
-except ImportError:
+except (ImportError, TypeError):
     YFINANCE_AVAILABLE = False
+    yf = None  # type: ignore
 
 
 class StockPriceFetcher:

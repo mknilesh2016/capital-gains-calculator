@@ -355,7 +355,7 @@ class ScheduleFAExcelReporter:
         if held_only:
             headers = ['Sl', 'Type', 'Acq Date', 'Shares', 'Cost USD', 'Peak USD', 
                        'Close USD', 'USD-INR Acq', 'USD-INR Peak', 'USD-INR Close',
-                       'Initial INR', 'Peak INR', 'Close INR', 'Calculation']
+                       'Initial INR', 'Peak INR', 'Close INR']
         else:
             headers = ['Sl', 'Type', 'Acq Date', 'Shares', 'Cost USD', 'Peak USD', 
                        'Sale USD', 'USD-INR Acq', 'USD-INR Peak', 'USD-INR Sale',
@@ -384,9 +384,6 @@ class ScheduleFAExcelReporter:
                 ws.write(row, 10, entry.initial_value_inr, self.formats['currency_inr'])
                 ws.write(row, 11, entry.peak_value_inr, self.formats['currency_inr'])
                 ws.write(row, 12, entry.closing_value_inr, self.formats['currency_inr'])
-                # Show calculation: shares × close_usd × rate
-                calc = f'{entry.shares:.0f} x ${entry.closing_price_usd:.2f} x {entry.rate_at_close:.2f}'
-                ws.write(row, 13, calc, self.formats['text'])
             else:
                 ws.write(row, 6, entry.sale_price_usd, self.formats['currency_usd'])
                 ws.write(row, 7, entry.rate_at_acquisition, self.formats['number'])
@@ -408,7 +405,8 @@ class ScheduleFAExcelReporter:
         ws.write(row, 10, total_initial, self.formats['total'])
         ws.write(row, 11, total_peak, self.formats['total'])
         ws.write(row, 12, total_close, self.formats['total'])
-        ws.write(row, 13, total_proceeds, self.formats['total'])
+        if not held_only:
+            ws.write(row, 13, total_proceeds, self.formats['total'])
     
     def _generate_brokerage_sheet(self, workbook, report: ScheduleFAReport):
         """Generate brokerage holdings sheet (aggregated by symbol)."""
